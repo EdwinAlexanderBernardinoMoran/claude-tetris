@@ -22,6 +22,7 @@ Three files: `index.html` (DOM + canvases), `style.css`, `game.js` (all logic, g
 - Scoring: `LINE_SCORES[cleared] * level`; soft drop +1/row, hard drop +2/row. Level = `floor(lines/10)+1`; `dropInterval = max(100, 1000-(level-1)*90)`.
 
 - Power-ups: every 2 cleared lines → `powerUpsPending++`; next `randomPiece()` gets `piece.powerUp` from the `POWERUPS` registry (`{id, icon, apply(row, col, piece)}`). Add a power-up = add an object there. `lockPiece()` runs `apply` on the anchor cell (`pieceAnchor`) after `merge()`, before `clearLines()`. Freeze uses `freezeLeft` (ms), consumed in `loop()`. Tint makes `WILDCARD` (9) blocks, removed when an adjacent row clears.
+- Skins: `SKINS` registry (`retro|neon|pastel|pixel`) `{colors, wildcard stops, background, gridColor(light), draw(ctx,px,py,size,fill,base)}`; `drawBlock` delegates to the active `skin` (alpha + `save/restore`). `paintBackground` fills the canvas (null = CSS theme bg). `applySkin(id)` redraws board+next; saved in `localStorage` `tetris.skin`. `COLORS` is the retro palette.
 
 ## Gotchas
 
