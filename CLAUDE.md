@@ -21,6 +21,8 @@ Three files: `index.html` (DOM + canvases), `style.css`, `game.js` (all logic, g
 - Rotation: `rotateCW` + horizontal-only kicks `[0,-1,1,-2,2]` in `tryRotate`.
 - Scoring: `LINE_SCORES[cleared] * level`; soft drop +1/row, hard drop +2/row. Level = `floor(lines/10)+1`; `dropInterval = max(100, 1000-(level-1)*90)`.
 
+- Power-ups: every 2 cleared lines → `powerUpsPending++`; next `randomPiece()` gets `piece.powerUp` from the `POWERUPS` registry (`{id, icon, apply(row, col, piece)}`). Add a power-up = add an object there. `lockPiece()` runs `apply` on the anchor cell (`pieceAnchor`) after `merge()`, before `clearLines()`. Freeze uses `freezeLeft` (ms), consumed in `loop()`. Tint makes `WILDCARD` (9) blocks, removed when an adjacent row clears.
+
 ## Gotchas
 
 - Changing `COLS`/`ROWS`/`BLOCK` requires updating canvas `width`/`height` in `index.html` (`COLS*BLOCK` × `ROWS*BLOCK`). The next-piece canvas is hardcoded 120×120 with a 4×4 grid of 30px blocks (`drawNext`).

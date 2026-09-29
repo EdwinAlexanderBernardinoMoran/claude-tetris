@@ -14,6 +14,7 @@ const COLORS = [
   '#90caf9', // J - light blue
   '#ffb74d', // L - orange
   '#9e9e9e', // N - nut (tuerca) gris metálico
+  '#ffe57f', // comodín (Tinte); no es una pieza, se dibuja con degradado
 ];
 
 const PIECES = [
@@ -29,6 +30,99 @@ const PIECES = [
 ];
 
 const LINE_SCORES = [0, 100, 300, 500, 800];
+
+const WILDCARD = 9;             // índice de COLORS para bloques comodín
+const POWERUP_EVERY_LINES = 2;  // líneas necesarias para ganar un power-up
+const FREEZE_MS = 5000;
+const DESTROY_SCORE = 5;        // puntos por bloque destruido (× nivel)
+
+// Registro de power-ups. Para agregar uno nuevo basta añadir un objeto aquí:
+// apply(row, col, piece) se llama al fijar la pieza, con (row, col) = celda ancla
+// en coordenadas del tablero. No hay que tocar ninguna otra función.
+const POWERUPS = [
+  {
+    id: 'bomb', icon: '💣',
+    // Área 3×3 centrada en el ancla; los bordes se recortan al tablero.
+    apply(row, col) {
+      const cells = [];
+      for (let r = Math.max(0, row - 1); r <= Math.min(ROWS - 1, row + 1); r++)
+        for (let c = Math.max(0, col - 1); c <= Math.min(COLS - 1, col + 1); c++)
+          cells.push([r, c]);
+      destroyBlocks(cells);
+    },
+  },
+  {
+    id: 'lightning', icon: '⚡',
+    // Borra la fila del ancla y colapsa lo de arriba (sin contar como línea).
+    apply(row) {
+      destroyBlocks(board[row].map((_, c) => [row, c]));
+      board.splice(row, 1);
+      board.unshift(new Array(COLS).fill(0));
+    },
+  },
+  {
+    id: 'tint', icon: '🎨',
+    // Los bloques del color de la pieza pasan a comodín; ver destroyAdjacentWildcards.
+    apply(row, col, piece) {
+      for (let r = 0; r < ROWS; r++)
+        for (let c = 0; c < COLS; c++)
+          if (board[r][c] === piece.type) board[r][c] = WILDCARD;
+    },
+  },
+  {
+    id: 'gravity', icon: '⬇️',
+    // Cada bloque cae hasta el fondo de su columna; lockPiece revisa líneas después.
+    apply() {
+      for (let c = 0; c < COLS; c++) {
+        let write = ROWS - 1;
+        for (let r = ROWS - 1; r >= 0; r--) {
+          if (!board[r][c]) continue;
+          if (r !== write) { board[write][c] = board[r][c]; board[r][c] = 0; }
+          write--;
+        }
+      }
+    },
+  },
+  {
+    id: 'freeze', icon: '❄️',
+    // Reinicia (no acumula) el contador si ya había un Congelar activo.
+    apply() { freezeLeft = FREEZE_MS; },
+  },
+];
+
+// Borra las celdas dadas (solo las ocupadas) y suma puntos por bloque.
+function destroyBlocks(cells) {
+  let n = 0;
+  for (const [r, c] of cells) {
+    if (board[r][c]) { board[r][c] = 0; n++; }
+  }
+  score += n * DESTROY_SCORE * level;
+}
+
+// Comodín: se elimina solo cuando se completa una fila adyacente (arriba o abajo).
+function destroyAdjacentWildcards(fullRows) {
+  const cells = [];
+  for (const r of fullRows)
+    for (const rr of [r - 1, r + 1]) {
+      if (rr < 0 || rr >= ROWS || fullRows.includes(rr)) continue;
+      for (let c = 0; c < COLS; c++)
+        if (board[rr][c] === WILDCARD) cells.push([rr, c]);
+    }
+  destroyBlocks(cells);
+}
+
+// Celda ocupada de la forma más cercana a su centro (coordenadas locales de la forma).
+function pieceAnchor(shape) {
+  const cr = (shape.length - 1) / 2, cc = (shape[0].length - 1) / 2;
+  let best = null, bestDist = Infinity;
+  for (let r = 0; r < shape.length; r++)
+    for (let c = 0; c < shape[r].length; c++) {
+      if (!shape[r][c]) continue;
+      const d = (r - cr) ** 2 + (c - cc) ** 2;
+      if (d < bestDist) { bestDist = d; best = { r, c }; }
+    }
+  return best;
+}
 
 const canvas = document.getElementById('board');
 const ctx = canvas.getContext('2d');
@@ -48,6 +142,7 @@ const themeText = document.getElementById('theme-text');
 let gridColor = '#22222e';
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
+let powerUpsPending, linesSincePowerUp, freezeLeft;
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -56,7 +151,12 @@ function createBoard() {
 function randomPiece() {
   const type = Math.floor(Math.random() * (PIECES.length - 1)) + 1;
   const shape = PIECES[type].map(row => [...row]);
-  return { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  const piece = { type, shape, x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: 0 };
+  if (powerUpsPending > 0) {
+    powerUpsPending--;
+    piece.powerUp = POWERUPS[Math.floor(Math.random() * POWERUPS.length)];
+  }
+  return piece;
 }
 
 function collide(shape, ox, oy) {
@@ -101,17 +201,20 @@ function merge() {
 }
 
 function clearLines() {
-  let cleared = 0;
-  for (let r = ROWS - 1; r >= 0; r--) {
-    if (board[r].every(v => v !== 0)) {
-      board.splice(r, 1);
-      board.unshift(new Array(COLS).fill(0));
-      cleared++;
-      r++;
-    }
-  }
+  const full = [];
+  for (let r = 0; r < ROWS; r++)
+    if (board[r].every(v => v !== 0)) full.push(r);
+  const cleared = full.length;
   if (cleared) {
+    destroyAdjacentWildcards(full);
+    for (let i = full.length - 1; i >= 0; i--) {
+      board.splice(full[i], 1);
+      board.unshift(new Array(COLS).fill(0));
+    }
     lines += cleared;
+    linesSincePowerUp += cleared;
+    powerUpsPending += Math.floor(linesSincePowerUp / POWERUP_EVERY_LINES);
+    linesSincePowerUp %= POWERUP_EVERY_LINES;
     score += (LINE_SCORES[cleared] || 0) * level;
     level = Math.floor(lines / 10) + 1;
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
@@ -144,6 +247,11 @@ function softDrop() {
 
 function lockPiece() {
   merge();
+  if (current.powerUp) {
+    const a = pieceAnchor(current.shape);
+    current.powerUp.apply(current.y + a.r, current.x + a.c, current);
+    updateHUD();
+  }
   clearLines();
   spawn();
 }
@@ -167,7 +275,15 @@ function drawBlock(context, x, y, colorIndex, size, alpha) {
   if (!colorIndex) return;
   const color = COLORS[colorIndex];
   context.globalAlpha = alpha ?? 1;
-  context.fillStyle = color;
+  if (colorIndex === WILDCARD) {
+    const g = context.createLinearGradient(x * size, y * size, (x + 1) * size, (y + 1) * size);
+    g.addColorStop(0, '#ff8a80');
+    g.addColorStop(0.5, '#ffe57f');
+    g.addColorStop(1, '#80d8ff');
+    context.fillStyle = g;
+  } else {
+    context.fillStyle = color;
+  }
   context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
   // highlight
   context.fillStyle = 'rgba(255,255,255,0.12)';
@@ -192,6 +308,26 @@ function drawGrid() {
   }
 }
 
+// Pieza especial: borde dorado brillante en cada bloque + icono en la celda ancla.
+function drawPowerUpMarker(context, piece, ox, oy, size, pulse) {
+  const a = pieceAnchor(piece.shape);
+  context.save();
+  context.strokeStyle = '#ffd700';
+  context.lineWidth = 2;
+  context.shadowColor = '#ffd700';
+  context.shadowBlur = 4 + 8 * pulse;
+  for (let r = 0; r < piece.shape.length; r++)
+    for (let c = 0; c < piece.shape[r].length; c++)
+      if (piece.shape[r][c])
+        context.strokeRect((ox + c) * size + 2, (oy + r) * size + 2, size - 4, size - 4);
+  context.shadowBlur = 0;
+  context.font = `${Math.floor(size * 0.6)}px serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText(piece.powerUp.icon, (ox + a.c + 0.5) * size, (oy + a.r + 0.5) * size);
+  context.restore();
+}
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   drawGrid();
@@ -212,6 +348,19 @@ function draw() {
   for (let r = 0; r < current.shape.length; r++)
     for (let c = 0; c < current.shape[r].length; c++)
       drawBlock(ctx, current.x + c, current.y + r, current.shape[r][c], BLOCK);
+  if (current.powerUp)
+    drawPowerUpMarker(ctx, current, current.x, current.y, BLOCK, 0.5 + 0.5 * Math.sin(performance.now() / 200));
+
+  // congelado: tinte azul + segundos restantes
+  if (freezeLeft > 0) {
+    ctx.fillStyle = 'rgba(100,181,246,0.15)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#64b5f6';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`❄️ ${(freezeLeft / 1000).toFixed(1)}s`, 8, 6);
+  }
 }
 
 function drawNext() {
@@ -223,6 +372,7 @@ function drawNext() {
   for (let r = 0; r < shape.length; r++)
     for (let c = 0; c < shape[r].length; c++)
       drawBlock(nextCtx, offX + c, offY + r, shape[r][c], NB);
+  if (next.powerUp) drawPowerUpMarker(nextCtx, next, offX, offY, NB, 1);
 }
 
 function endGame() {
@@ -251,13 +401,17 @@ function loop(ts) {
   if (gameOver || paused) return;
   const dt = ts - lastTime;
   lastTime = ts;
-  dropAccum += dt;
-  if (dropAccum >= dropInterval) {
-    dropAccum = 0;
-    if (!collide(current.shape, current.x, current.y + 1)) {
-      current.y++;
-    } else {
-      lockPiece();
+  if (freezeLeft > 0) {
+    freezeLeft = Math.max(0, freezeLeft - dt); // la caída automática espera; el jugador sí puede mover
+  } else {
+    dropAccum += dt;
+    if (dropAccum >= dropInterval) {
+      dropAccum = 0;
+      if (!collide(current.shape, current.x, current.y + 1)) {
+        current.y++;
+      } else {
+        lockPiece();
+      }
     }
   }
   draw();
@@ -274,6 +428,9 @@ function init() {
   gameOver = false;
   dropInterval = 1000;
   dropAccum = 0;
+  powerUpsPending = 0;
+  linesSincePowerUp = 0;
+  freezeLeft = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
