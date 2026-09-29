@@ -138,11 +138,109 @@ const restartBtn = document.getElementById('restart-btn');
 const themeToggle = document.getElementById('theme-toggle');
 const themeIcon = document.getElementById('theme-icon');
 const themeText = document.getElementById('theme-text');
+const startOverlay = document.getElementById('start-overlay');
+const startRecords = document.getElementById('start-records');
+const playBtn = document.getElementById('play-btn');
+const resetRecordsBtn = document.getElementById('reset-records-btn');
+const gameoverRecords = document.getElementById('gameover-records');
+const nameForm = document.getElementById('name-form');
+const nameInput = document.getElementById('name-input');
+const saveNameBtn = document.getElementById('save-name-btn');
+const recordsTable = document.getElementById('records-table');
+
+const RECORDS_KEY = 'tetris.records';
+const MAX_RECORDS = 5;
 
 let gridColor = '#22222e';
 
 let board, current, next, score, lines, level, paused, gameOver, lastTime, dropAccum, dropInterval, animId;
 let powerUpsPending, linesSincePowerUp, freezeLeft;
+let combo, maxComboThisGame;
+
+// ---- Records (localStorage) ----
+function loadRecords() {
+  const empty = { top: [], bestCombo: 0, maxLines: 0 };
+  try {
+    const r = JSON.parse(localStorage.getItem(RECORDS_KEY));
+    if (!r || !Array.isArray(r.top)) return empty;
+    return {
+      top: r.top.slice(0, MAX_RECORDS),
+      bestCombo: Number(r.bestCombo) || 0,
+      maxLines: Number(r.maxLines) || 0,
+    };
+  } catch (e) {
+    return empty;
+  }
+}
+
+function saveRecords(rec) {
+  try { localStorage.setItem(RECORDS_KEY, JSON.stringify(rec)); } catch (e) { /* sin almacenamiento */ }
+}
+
+function qualifiesForTop(rec, pts) {
+  return pts > 0 && (rec.top.length < MAX_RECORDS || pts > rec.top[rec.top.length - 1].score);
+}
+
+// Dibuja tabla + estadísticas en `container`; `highlight` = índice de fila a resaltar.
+// Solo textContent: los nombres son texto del usuario.
+function renderRecords(container, highlight = -1) {
+  const rec = loadRecords();
+  container.textContent = '';
+  const table = document.createElement('table');
+  table.className = 'records-table';
+  if (!rec.top.length) {
+    const td = table.insertRow().insertCell();
+    td.colSpan = 3;
+    td.className = 'records-empty';
+    td.textContent = 'Sin records todavía';
+  }
+  rec.top.forEach((e, i) => {
+    const tr = table.insertRow();
+    if (i === highlight) tr.className = 'highlight';
+    tr.insertCell().textContent = `${i + 1}.`;
+    tr.insertCell().textContent = String(e.name);
+    tr.insertCell().textContent = Number(e.score).toLocaleString();
+  });
+  const stats = document.createElement('p');
+  stats.className = 'records-stats';
+  stats.textContent = `Mejor combo: ${rec.bestCombo} · Líneas máx.: ${rec.maxLines}`;
+  container.append(table, stats);
+}
+
+// Al terminar la partida: actualiza estadísticas y ofrece guardar nombre si entra al top.
+function showGameOverRecords() {
+  const rec = loadRecords();
+  rec.bestCombo = Math.max(rec.bestCombo, maxComboThisGame);
+  rec.maxLines = Math.max(rec.maxLines, lines);
+  saveRecords(rec);
+  gameoverRecords.classList.remove('hidden');
+  renderRecords(recordsTable);
+  if (qualifiesForTop(rec, score)) {
+    nameForm.classList.remove('hidden');
+    nameInput.value = '';
+    nameInput.focus();
+  } else {
+    nameForm.classList.add('hidden');
+  }
+}
+
+function submitName() {
+  if (nameForm.classList.contains('hidden')) return;
+  const rec = loadRecords();
+  const entry = {
+    name: nameInput.value.trim().slice(0, 12) || 'Anónimo',
+    score, lines, level, date: new Date().toISOString(),
+  };
+  // Inserta tras los empates existentes (el más antiguo queda arriba)
+  let idx = rec.top.findIndex(e => e.score < score);
+  if (idx === -1) idx = rec.top.length;
+  rec.top.splice(idx, 0, entry);
+  rec.top = rec.top.slice(0, MAX_RECORDS);
+  saveRecords(rec);
+  nameForm.classList.add('hidden');
+  renderRecords(recordsTable, idx);
+  restartBtn.focus();
+}
 
 function createBoard() {
   return Array.from({ length: ROWS }, () => new Array(COLS).fill(0));
@@ -220,6 +318,7 @@ function clearLines() {
     dropInterval = Math.max(100, 1000 - (level - 1) * 90);
     updateHUD();
   }
+  return cleared;
 }
 
 function ghostY() {
@@ -252,7 +351,12 @@ function lockPiece() {
     current.powerUp.apply(current.y + a.r, current.x + a.c, current);
     updateHUD();
   }
-  clearLines();
+  if (clearLines()) {
+    combo++;
+    maxComboThisGame = Math.max(maxComboThisGame, combo);
+  } else {
+    combo = 0;
+  }
   spawn();
 }
 
@@ -381,6 +485,7 @@ function endGame() {
   overlayTitle.textContent = 'GAME OVER';
   overlayScore.textContent = `Puntuación: ${score.toLocaleString()}`;
   overlay.classList.remove('hidden');
+  showGameOverRecords();
 }
 
 function togglePause() {
@@ -431,16 +536,25 @@ function init() {
   powerUpsPending = 0;
   linesSincePowerUp = 0;
   freezeLeft = 0;
+  combo = 0;
+  maxComboThisGame = 0;
   lastTime = performance.now();
   next = randomPiece();
   spawn();
   updateHUD();
   overlay.classList.add('hidden');
+  startOverlay.classList.add('hidden');
+  gameoverRecords.classList.add('hidden');
   cancelAnimationFrame(animId);
   animId = requestAnimationFrame(loop);
 }
 
 document.addEventListener('keydown', e => {
+  // Escribiendo el nombre: no procesar teclas del juego (ni preventDefault en Space)
+  if (e.target === nameInput) {
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') submitName();
+    return;
+  }
   if (e.code === 'KeyP') { togglePause(); return; }
   if (paused || gameOver) return;
   switch (e.code) {
@@ -466,6 +580,14 @@ document.addEventListener('keydown', e => {
 });
 
 restartBtn.addEventListener('click', init);
+playBtn.addEventListener('click', () => { playBtn.blur(); init(); });
+saveNameBtn.addEventListener('click', submitName);
+resetRecordsBtn.addEventListener('click', () => {
+  if (!confirm('¿Borrar todos los records?')) return;
+  try { localStorage.removeItem(RECORDS_KEY); } catch (e) { /* sin almacenamiento */ }
+  renderRecords(startRecords);
+  resetRecordsBtn.blur();
+});
 
 // Tema: siempre arranca en oscuro (no se persiste entre sesiones)
 function applyTheme(theme) {
@@ -486,4 +608,7 @@ themeToggle.addEventListener('click', () => {
 
 applyTheme('dark');
 
-init();
+// Pantalla de inicio: el juego no arranca hasta pulsar "Jugar" (gameOver bloquea las teclas)
+gameOver = true;
+renderRecords(startRecords);
+startOverlay.classList.remove('hidden');

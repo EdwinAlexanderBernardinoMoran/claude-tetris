@@ -22,6 +22,7 @@ Three files: `index.html` (DOM + canvases), `style.css`, `game.js` (all logic, g
 - Scoring: `LINE_SCORES[cleared] * level`; soft drop +1/row, hard drop +2/row. Level = `floor(lines/10)+1`; `dropInterval = max(100, 1000-(level-1)*90)`.
 
 - Power-ups: every 2 cleared lines → `powerUpsPending++`; next `randomPiece()` gets `piece.powerUp` from the `POWERUPS` registry (`{id, icon, apply(row, col, piece)}`). Add a power-up = add an object there. `lockPiece()` runs `apply` on the anchor cell (`pieceAnchor`) after `merge()`, before `clearLines()`. Freeze uses `freezeLeft` (ms), consumed in `loop()`. Tint makes `WILDCARD` (9) blocks, removed when an adjacent row clears.
+- Records: `localStorage['tetris.records']` = `{top:[{name,score,lines,level,date}] (max 5), bestCombo, maxLines}` via `loadRecords`/`saveRecords` (try/catch, fallback empty). Start overlay (`#start-overlay`) shows on load; game starts only on "Jugar" (`gameOver=true` until `init()`). `endGame()` → `showGameOverRecords()` (name form if top 5, `submitName`). `renderRecords(container, highlight)` is the single table renderer (textContent only). Combo = consecutive `lockPiece()` calls that clear lines. Keydown ignores keys while `nameInput` is target.
 
 ## Gotchas
 
